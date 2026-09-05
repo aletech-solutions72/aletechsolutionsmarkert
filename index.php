@@ -1,0 +1,1266 @@
+<?php
+session_start();
+require_once 'config/database.php';
+require_once 'includes/functions.php';
+
+$database = new Database();
+$db = $database->getConnection();
+
+// Get categories
+$categories_query = "SELECT * FROM categories WHERE status = 'active' ORDER BY name";
+$categories_stmt = $db->query($categories_query);
+$categories = $categories_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get featured products
+$featured_query = "SELECT p.*, c.name as category_name, u.full_name as seller_name,
+                   (SELECT AVG(rating) FROM reviews WHERE product_id = p.id) as avg_rating,
+                   (SELECT COUNT(*) FROM reviews WHERE product_id = p.id) as review_count
+                   FROM products p 
+                   JOIN categories c ON p.category_id = c.id 
+                   JOIN users u ON p.seller_id = u.id 
+                   WHERE p.status = 'active' AND p.is_featured = 1
+                   ORDER BY p.created_at DESC 
+                   LIMIT 8";
+$featured_stmt = $db->query($featured_query);
+$featured_products = $featured_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get all active products
+$products_query = "SELECT p.*, c.name as category_name, u.full_name as seller_name,
+                   (SELECT AVG(rating) FROM reviews WHERE product_id = p.id) as avg_rating
+                   FROM products p 
+                   JOIN categories c ON p.category_id = c.id 
+                   JOIN users u ON p.seller_id = u.id 
+                   WHERE p.status = 'active'
+                   ORDER BY p.created_at DESC 
+                   LIMIT 12";
+$products_stmt = $db->query($products_query);
+$products = $products_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Handle search
+$search_results = [];
+$search_term = '';
+if (isset($_GET['search']) && !empty($_GET['search'])) {
+    $search_term = sanitize_input($_GET['search']);
+    $search_query = "SELECT p.*, c.name as category_name, u.full_name as seller_name
+                     FROM products p 
+                     JOIN categories c ON p.category_id = c.id 
+                     JOIN users u ON p.seller_id = u.id 
+                     WHERE p.status = 'active' 
+                     AND (p.name LIKE ? OR p.description LIKE ? OR p.brand LIKE ? OR c.name LIKE ?)
+                     ORDER BY p.created_at DESC";
+    $search_stmt = $db->prepare($search_query);
+    $search_param = "%$search_term%";
+    $search_stmt->execute([$search_param, $search_param, $search_param, $search_param]);
+    $search_results = $search_stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+// Handle category filter
+$category_products = [];
+$selected_category = null;
+if (isset($_GET['category'])) {
+    $category_id = $_GET['category'];
+    $category_query = "SELECT * FROM categories WHERE id = ?";
+    $category_stmt = $db->prepare($category_query);
+    $category_stmt->execute([$category_id]);
+    $selected_category = $category_stmt->fetch(PDO::FETCH_ASSOC);
+    
+    $category_products_query = "SELECT p.*, c.name as category_name, u.full_name as seller_name
+                       FROM products p 
+                       JOIN categories c ON p.category_id = c.id 
+                       JOIN users u ON p.seller_id = u.id 
+                       WHERE p.status = 'active' AND p.category_id = ?
+                       ORDER BY p.created_at DESC";
+    $category_stmt = $db->prepare($category_products_query);
+    $category_stmt->execute([$category_id]);
+    $category_products = $category_stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+// Handle featured filter
+$show_featured = isset($_GET['featured']) && $_GET['featured'] == '1';
+
+// Handle promotions
+$show_promotions = isset($_GET['promotions']) && $_GET['promotions'] == '1';
+$promotion_products = [];
+if ($show_promotions) {
+    $promo_query = "SELECT p.*, c.name as category_name, u.full_name as seller_name,
+                    (p.price * 0.8) as discounted_price
+                    FROM products p 
+                    JOIN categories c ON p.category_id = c.id 
+                    JOIN users u ON p.seller_id = u.id 
+                    WHERE p.status = 'active'
+                    ORDER BY RAND()
+                    LIMIT 12";
+    $promo_stmt = $db->query($promo_query);
+    $promotion_products = $promo_stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+// Get cart count if logged in
+$cart_count = 0;
+if (isset($_SESSION['user_id'])) {
+    $cart_count = get_cart_count($db, $_SESSION['user_id']);
+}
+
+// Determine which section to show
+$page = isset($_GET['page']) ? $_GET['page'] : 'home';
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Msika Premium | Africa's #1 B2B Marketing & E-commerce Platform</title>
+    <!-- Google Fonts & Font Awesome 6 -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fc;
+            color: #1e293b;
+            overflow-x: hidden;
+        }
+
+        :root {
+            --ale-red: #D32F2F;
+            --ale-red-dark: #B71C1C;
+            --ale-red-light: #FEF2F2;
+            --ale-grey-dark: #0F172A;
+            --ale-grey: #475569;
+            --ale-grey-light: #F1F5F9;
+            --msika-white: #FFFFFF;
+            --shadow-sm: 0 2px 8px rgba(0,0,0,0.04);
+            --shadow-md: 0 8px 20px rgba(0,0,0,0.06);
+            --shadow-lg: 0 20px 30px -12px rgba(0,0,0,0.12);
+            --transition: all 0.25s ease;
+        }
+
+        /* SIDENAV */
+        .sidenav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 280px;
+            height: 100vh;
+            background: linear-gradient(180deg, #FFFFFF 0%, #FEF7F6 100%);
+            box-shadow: var(--shadow-lg);
+            z-index: 1000;
+            padding: 32px 0 24px;
+            transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+            border-right: 1px solid rgba(211,47,47,0.12);
+            overflow-y: auto;
+        }
+
+        .sidenav-header {
+            padding: 0 24px 24px 24px;
+            border-bottom: 2px solid var(--ale-red-light);
+            margin-bottom: 24px;
+        }
+        .sidenav-header h3 {
+            color: var(--ale-red);
+            font-size: 1.5rem;
+            font-weight: 800;
+            letter-spacing: -0.3px;
+        }
+        .sidenav-header p {
+            font-size: 0.7rem;
+            color: var(--ale-grey);
+            margin-top: 6px;
+        }
+
+        .sidenav-menu {
+            list-style: none;
+            padding: 0 16px;
+        }
+        .sidenav-menu li {
+            margin: 4px 0;
+        }
+        .sidenav-menu li a {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 18px;
+            border-radius: 14px;
+            font-weight: 500;
+            color: var(--ale-grey-dark);
+            transition: var(--transition);
+            font-size: 0.95rem;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .sidenav-menu li a i {
+            width: 24px;
+            color: var(--ale-red);
+            font-size: 1.2rem;
+        }
+        .sidenav-menu li a:hover {
+            background: var(--ale-red-light);
+            color: var(--ale-red);
+            transform: translateX(6px);
+            text-decoration: none;
+        }
+        .sidenav-menu li a.active {
+            background: var(--ale-red-light);
+            color: var(--ale-red);
+        }
+
+        .hot-offer-side {
+            background: linear-gradient(135deg, var(--ale-red), #e04e4e);
+            margin: 28px 20px;
+            padding: 20px 16px;
+            border-radius: 24px;
+            color: white;
+            text-align: center;
+            box-shadow: var(--shadow-md);
+        }
+
+        .mobile-menu-btn {
+            position: relative;
+            background: var(--ale-red);
+            color: white;
+            width: 42px;
+            height: 42px;
+            border-radius: 30px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            cursor: pointer;
+            box-shadow: var(--shadow-sm);
+            border: none;
+            transition: var(--transition);
+            flex-shrink: 0;
+        }
+        .mobile-menu-btn:hover {
+            background: var(--ale-red-dark);
+            transform: scale(0.97);
+        }
+
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            backdrop-filter: blur(3px);
+            z-index: 999;
+            display: none;
+        }
+
+        @media (max-width: 1024px) {
+            .sidenav {
+                transform: translateX(-100%);
+            }
+            .sidenav.open {
+                transform: translateX(0);
+            }
+            .mobile-menu-btn {
+                display: flex;
+            }
+            .overlay.active {
+                display: block;
+            }
+        }
+
+        /* HEADER */
+        .main-header {
+            background: white;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+            position: sticky;
+            top: 0;
+            z-index: 99;
+            margin-left: 280px;
+            transition: margin-left 0.3s ease;
+        }
+
+        .navbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 28px;
+            max-width: 1400px;
+            margin: 0 auto;
+            gap: 16px;
+        }
+
+        .nav-left-group {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-shrink: 0;
+        }
+
+        .logo h1 {
+            font-size: 1.6rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            line-height: 1.2;
+        }
+        .logo span:first-child { color: var(--ale-red); }
+        .logo span:last-child { color: var(--ale-grey-dark); }
+        .tagline { font-size: 0.65rem; color: var(--ale-grey); margin-top: 2px; letter-spacing: -0.2px; }
+
+        .search-bar {
+            flex: 1;
+            max-width: 460px;
+            min-width: 200px;
+            display: flex;
+            background: var(--ale-grey-light);
+            border-radius: 48px;
+            overflow: hidden;
+            border: 1px solid #e2e8f0;
+            transition: var(--transition);
+        }
+        .search-bar:focus-within {
+            border-color: var(--ale-red);
+            box-shadow: 0 0 0 3px rgba(211,47,47,0.1);
+        }
+        .search-bar input {
+            width: 100%;
+            padding: 10px 18px;
+            border: none;
+            background: transparent;
+            outline: none;
+            font-size: 0.9rem;
+        }
+        .search-bar button {
+            background: var(--ale-red);
+            border: none;
+            padding: 0 22px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.95rem;
+            white-space: nowrap;
+            transition: 0.2s;
+        }
+        .search-bar button:hover {
+            background: var(--ale-red-dark);
+        }
+        .nav-icons {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-shrink: 0;
+        }
+        .cart-icon, .user-icon {
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 500;
+            color: var(--ale-grey-dark);
+            text-decoration: none;
+            background: var(--ale-grey-light);
+            padding: 8px 14px;
+            border-radius: 40px;
+            transition: var(--transition);
+        }
+        .cart-icon i, .user-icon i { font-size: 1.2rem; color: var(--ale-red); }
+        .cart-icon:hover, .user-icon:hover {
+            background: var(--ale-red-light);
+            transform: translateY(-1px);
+        }
+
+        /* Main content area */
+        .main-container {
+            margin-left: 280px;
+            padding: 28px 36px 56px;
+            transition: margin-left 0.3s ease;
+        }
+
+        @media (max-width: 1024px) {
+            .main-header {
+                margin-left: 0;
+            }
+            .main-container {
+                margin-left: 0;
+                padding: 20px 18px 40px;
+            }
+        }
+
+        /* Hero section */
+        .hero-section {
+            background: linear-gradient(115deg, #FFF5F5 0%, #FFFFFF 100%);
+            border-radius: 32px;
+            padding: 40px 36px;
+            margin-bottom: 48px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 32px;
+            align-items: center;
+            justify-content: space-between;
+            border: 1px solid rgba(211,47,47,0.08);
+            box-shadow: var(--shadow-sm);
+        }
+        .hero-content { flex: 1.2; }
+        .hero-badge {
+            background: var(--ale-red);
+            color: white;
+            padding: 6px 18px;
+            border-radius: 60px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            display: inline-block;
+            margin-bottom: 24px;
+        }
+        .hero-content h2 {
+            font-size: 2.4rem;
+            font-weight: 800;
+            line-height: 1.2;
+            background: linear-gradient(125deg, #0F172A, #D32F2F);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .hero-image img { 
+            width: 240px; 
+            border-radius: 28px; 
+            box-shadow: var(--shadow-md); 
+            object-fit: cover; 
+        }
+
+        /* Categories grid */
+        .categories-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin: 24px 0 40px;
+        }
+        .category-item {
+            background: white;
+            padding: 8px 20px;
+            border-radius: 60px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            box-shadow: var(--shadow-sm);
+            cursor: pointer;
+            transition: var(--transition);
+            border: 1px solid #eef2f6;
+            font-weight: 500;
+            font-size: 0.85rem;
+            text-decoration: none;
+            color: var(--ale-grey-dark);
+        }
+        .category-item:hover {
+            border-color: var(--ale-red);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+        .category-item i { font-size: 1rem; color: var(--ale-red); }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin: 48px 0 28px;
+        }
+        .section-header h2 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            position: relative;
+        }
+        .section-header h2:after {
+            content: '';
+            position: absolute;
+            bottom: -12px;
+            left: 0;
+            width: 70px;
+            height: 4px;
+            background: var(--ale-red);
+            border-radius: 4px;
+        }
+
+        .product-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+            gap: 28px;
+            margin: 20px 0 56px;
+        }
+        .product-card {
+            background: white;
+            border-radius: 24px;
+            overflow: hidden;
+            transition: var(--transition);
+            box-shadow: var(--shadow-sm);
+            border: 1px solid #edf2f7;
+        }
+        .product-card:hover {
+            transform: translateY(-6px);
+            box-shadow: var(--shadow-lg);
+        }
+        .product-img {
+            background: #FAFCFF;
+            text-align: center;
+            padding: 28px 20px;
+            height: 220px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-bottom: 1px solid #f1f5f9;
+            position: relative;
+        }
+        .product-img img {
+            max-width: 160px;
+            max-height: 150px;
+            object-fit: contain;
+            transition: transform 0.25s;
+        }
+        .discount-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #D32F2F;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+        .product-info {
+            padding: 18px 18px 22px;
+        }
+        .product-title {
+            font-weight: 700;
+            font-size: 1rem;
+            margin-bottom: 8px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .product-price {
+            color: var(--ale-red);
+            font-weight: 800;
+            font-size: 1.2rem;
+        }
+        .original-price {
+            text-decoration: line-through;
+            color: #94a3b8;
+            font-size: 0.85rem;
+            margin-left: 8px;
+        }
+        .rating {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 10px 0;
+            color: #f59e0b;
+            font-size: 0.8rem;
+        }
+        .btn-action {
+            width: 100%;
+            padding: 12px;
+            border-radius: 40px;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            transition: 0.2s;
+            margin-top: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            text-decoration: none;
+        }
+        .btn-cart {
+            background: var(--ale-red);
+            color: white;
+        }
+        .btn-cart:hover {
+            background: var(--ale-red-dark);
+            transform: scale(0.98);
+        }
+
+        /* Info pages */
+        .info-page {
+            background: white;
+            border-radius: 24px;
+            padding: 40px;
+            margin-bottom: 40px;
+            box-shadow: var(--shadow-sm);
+        }
+        .info-page h2 {
+            font-size: 2rem;
+            margin-bottom: 20px;
+            color: var(--ale-grey-dark);
+        }
+        .info-page h3 {
+            font-size: 1.3rem;
+            margin: 30px 0 15px;
+            color: var(--ale-grey-dark);
+        }
+        .info-page p {
+            line-height: 1.8;
+            margin-bottom: 15px;
+            color: var(--ale-grey);
+        }
+        .info-page ul {
+            margin: 15px 0 15px 20px;
+        }
+        .info-page ul li {
+            margin-bottom: 10px;
+            color: var(--ale-grey);
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }
+        .feature-card {
+            background: #f8fafc;
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+        }
+        .feature-card i {
+            font-size: 2rem;
+            color: var(--ale-red);
+            margin-bottom: 15px;
+        }
+        .feature-card h4 {
+            margin-bottom: 10px;
+            color: var(--ale-grey-dark);
+        }
+
+        .marketing-banner {
+            background: linear-gradient(105deg, #0F172A 0%, #1e293b 100%);
+            border-radius: 32px;
+            padding: 40px 36px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            margin: 48px 0;
+            color: white;
+        }
+        .banner-btn {
+            background: var(--ale-red);
+            padding: 12px 32px;
+            border-radius: 60px;
+            font-weight: 700;
+            transition: 0.2s;
+            text-decoration: none;
+            color: white;
+            display: inline-block;
+        }
+        .footer {
+            background: #0A0F1C;
+            color: #9ca3af;
+            margin-top: 70px;
+            padding: 52px 0 28px;
+            border-top: 4px solid var(--ale-red);
+        }
+        .footer-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 40px;
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 0 28px;
+        }
+        .footer-col h4 { color: white; margin-bottom: 22px; font-size: 1rem; position: relative; display: inline-block; }
+        .footer-col h4:after { content: ''; width: 35px; height: 2px; background: var(--ale-red); position: absolute; bottom: -8px; left: 0; }
+        .footer-col a, .footer-col p { display: block; margin-bottom: 10px; font-size: 0.85rem; transition: 0.2s; color: #9ca3af; text-decoration: none; }
+        .footer-col a:hover { color: var(--ale-red); transform: translateX(3px); text-decoration: none; }
+        .dev-credit {
+            background: #05080f;
+            margin-top: 40px;
+            padding: 18px 24px;
+            text-align: center;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            max-width: 1280px;
+            margin-left: auto;
+            margin-right: auto;
+            border: 1px solid #1e2a3a;
+        }
+        .copyright {
+            text-align: center;
+            padding-top: 32px;
+            font-size: 0.75rem;
+            border-top: 1px solid #1f2a3e;
+            margin-top: 32px;
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        @media (max-width: 640px) {
+            .product-grid { grid-template-columns: repeat(2, 1fr); gap: 14px; }
+            .hero-content h2 { font-size: 1.4rem; }
+            .hero-section { padding: 24px 18px; }
+            .section-header h2 { font-size: 1.4rem; }
+            .marketing-banner { padding: 28px 20px; text-align: center; gap: 18px; justify-content: center; }
+            .cart-icon span { display: none; }
+            .user-icon span { display: none; }
+            .info-page { padding: 20px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- SIDENAV -->
+<div class="sidenav" id="sideNav">
+    <div class="sidenav-header">
+        <h3><i class="fas fa-chart-line"></i> Aletech Boost</h3>
+        <p>Africa's #1 Marketing & B2B Channel</p>
+    </div>
+    <ul class="sidenav-menu">
+        <li><a href="index.php" class="<?php echo $page == 'home' ? 'active' : ''; ?>"><i class="fas fa-home"></i> Home</a></li>
+        <li><a href="index.php?featured=1" class="<?php echo $show_featured ? 'active' : ''; ?>"><i class="fas fa-star"></i> Featured Products</a></li>
+        <li><a href="index.php#categories"><i class="fas fa-th-large"></i> Categories</a></li>
+        <li><a href="index.php?page=marketing"><i class="fas fa-bullhorn"></i> Marketing Tools</a></li>
+        <li><a href="index.php?page=analytics"><i class="fas fa-chart-simple"></i> Analytics Hub</a></li>
+        <li><a href="index.php?page=shipping"><i class="fas fa-truck-fast"></i> Logistics & Shipping</a></li>
+        <li><a href="index.php?promotions=1" class="<?php echo $show_promotions ? 'active' : ''; ?>"><i class="fas fa-percent"></i> Promotions & Deals</a></li>
+        <li><a href="index.php?page=support"><i class="fas fa-headset"></i> Support Center</a></li>
+        <?php if(isset($_SESSION['user_id'])): ?>
+            <?php if($_SESSION['role'] == 'admin'): ?>
+                <li><a href="admin/dashboard.php"><i class="fas fa-tachometer-alt"></i> Admin Dashboard</a></li>
+            <?php elseif($_SESSION['role'] == 'seller'): ?>
+                <li><a href="seller/dashboard.php"><i class="fas fa-store"></i> Seller Dashboard</a></li>
+            <?php endif; ?>
+            <li><a href="auth/logout.php"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+        <?php else: ?>
+            <li><a href="auth/login.php"><i class="fas fa-sign-in-alt"></i> Login</a></li>
+            <li><a href="auth/register.php"><i class="fas fa-user-plus"></i> Register</a></li>
+        <?php endif; ?>
+    </ul>
+    <div class="hot-offer-side">
+        <i class="fas fa-fire fa-2x"></i>
+        <p style="margin-top: 12px; font-weight: 700;">🔥 3 Months Free Listing</p>
+        <small>For verified African vendors</small>
+    </div>
+</div>
+
+<div class="overlay" id="overlay"></div>
+
+<header class="main-header">
+    <div class="navbar">
+        <div class="nav-left-group">
+            <div class="mobile-menu-btn" id="mobileMenuBtn"><i class="fas fa-bars"></i></div>
+            <div class="logo">
+                <h1><span>Msika</span><span> Premium</span></h1>
+                <div class="tagline">The #1 Marketing Platform in Africa</div>
+            </div>
+        </div>
+        <form class="search-bar" method="GET" action="index.php">
+            <input type="text" name="search" placeholder="Search products, suppliers, categories..." value="<?php echo htmlspecialchars($search_term); ?>">
+            <button type="submit"><i class="fas fa-search"></i> Search</button>
+        </form>
+        <div class="nav-icons">
+            <a href="cart.php" class="cart-icon">
+                <i class="fas fa-shopping-cart"></i> 
+                <span>Cart <?php echo $cart_count > 0 ? "($cart_count)" : ''; ?></span>
+            </a>
+            <?php if(isset($_SESSION['user_id'])): ?>
+                <a href="<?php echo $_SESSION['role'] == 'admin' ? 'admin/dashboard.php' : ($_SESSION['role'] == 'seller' ? 'seller/dashboard.php' : '#'); ?>" class="user-icon">
+                    <i class="fas fa-user"></i>
+                    <span><?php echo htmlspecialchars($_SESSION['full_name']); ?></span>
+                </a>
+            <?php else: ?>
+                <a href="auth/login.php" class="user-icon">
+                    <i class="fas fa-user"></i>
+                    <span>Login</span>
+                </a>
+            <?php endif; ?>
+        </div>
+    </div>
+</header>
+
+<main class="main-container">
+    <?php if(isset($_SESSION['success'])): ?>
+        <div class="alert alert-success">
+            <i class="fas fa-check-circle"></i> <?php echo $_SESSION['success']; unset($_SESSION['success']); ?>
+        </div>
+    <?php endif; ?>
+    
+    <?php if(isset($_SESSION['error'])): ?>
+        <div class="alert alert-error">
+            <i class="fas fa-exclamation-circle"></i> <?php echo $_SESSION['error']; unset($_SESSION['error']); ?>
+        </div>
+    <?php endif; ?>
+
+    <?php if($page == 'marketing'): ?>
+        <!-- Marketing Tools Page -->
+        <div class="info-page">
+            <h2>🚀 Marketing Tools</h2>
+            <p>Boost your business with our comprehensive marketing suite designed for African entrepreneurs.</p>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <i class="fas fa-bullhorn"></i>
+                    <h4>Social Media Campaigns</h4>
+                    <p>Launch targeted campaigns across all major social platforms.</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-envelope"></i>
+                    <h4>Email Marketing</h4>
+                    <p>Reach customers directly with professional email campaigns.</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-chart-line"></i>
+                    <h4>SEO Optimization</h4>
+                    <p>Improve your visibility in search engines.</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-ad"></i>
+                    <h4>Paid Advertising</h4>
+                    <p>Targeted ads to reach your ideal customers.</p>
+                </div>
+            </div>
+            
+            <h3>Why Choose Our Marketing Tools?</h3>
+            <ul>
+                <li>Reach millions of potential customers across Africa</li>
+                <li>Real-time analytics and performance tracking</li>
+                <li>Automated marketing campaigns</li>
+                <li>Expert support and guidance</li>
+            </ul>
+        </div>
+        
+    <?php elseif($page == 'analytics'): ?>
+        <!-- Analytics Hub Page -->
+        <div class="info-page">
+            <h2>📊 Analytics Hub</h2>
+            <p>Make data-driven decisions with our powerful analytics tools.</p>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <i class="fas fa-chart-bar"></i>
+                    <h4>Sales Analytics</h4>
+                    <p>Track your sales performance in real-time.</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-users"></i>
+                    <h4>Customer Insights</h4>
+                    <p>Understand your customers better.</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-trending-up"></i>
+                    <h4>Market Trends</h4>
+                    <p>Stay ahead of market changes.</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-file-alt"></i>
+                    <h4>Custom Reports</h4>
+                    <p>Generate detailed reports for your business.</p>
+                </div>
+            </div>
+            
+            <h3>Key Metrics You Can Track</h3>
+            <ul>
+                <li>Revenue and sales performance</li>
+                <li>Customer acquisition and retention</li>
+                <li>Product performance and popularity</li>
+                <li>Market share and competition analysis</li>
+            </ul>
+        </div>
+        
+    <?php elseif($page == 'shipping'): ?>
+        <!-- Logistics & Shipping Page -->
+        <div class="info-page">
+            <h2>🚚 Logistics & Shipping</h2>
+            <p>Reliable shipping solutions for your business across Africa.</p>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <i class="fas fa-truck"></i>
+                    <h4>Fast Delivery</h4>
+                    <p>Quick and reliable delivery services.</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-globe"></i>
+                    <h4>International Shipping</h4>
+                    <p>Ship your products worldwide.</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-box"></i>
+                    <h4>Packaging Solutions</h4>
+                    <p>Professional packaging for your products.</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-map-marker-alt"></i>
+                    <h4>Tracking</h4>
+                    <p>Real-time shipment tracking.</p>
+                </div>
+            </div>
+            
+            <h3>Our Shipping Partners</h3>
+            <ul>
+                <li>DHL Express - International shipping</li>
+                <li>FedEx - Global delivery solutions</li>
+                <li>Local courier services - Regional delivery</li>
+                <li>Custom logistics solutions for bulk orders</li>
+            </ul>
+        </div>
+        
+    <?php elseif($page == 'support'): ?>
+        <!-- Support Center Page -->
+        <div class="info-page">
+            <h2>🎧 Support Center</h2>
+            <p>We're here to help you succeed. Contact our support team anytime.</p>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <i class="fas fa-phone"></i>
+                    <h4>Phone Support</h4>
+                    <p>+260 776 674 744<br>Available 24/7</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-envelope"></i>
+                    <h4>Email Support</h4>
+                    <p>hello@msikapremium.africa<br>Response within 24 hours</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-comments"></i>
+                    <h4>Live Chat</h4>
+                    <p>Chat with our support team<br>Available during business hours</p>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-book"></i>
+                    <h4>Knowledge Base</h4>
+                    <p>Find answers to common questions</p>
+                </div>
+            </div>
+            
+            <h3>Frequently Asked Questions</h3>
+            <ul>
+                <li><strong>How do I become a seller?</strong> - Register an account and apply to become a seller.</li>
+                <li><strong>What payment methods are accepted?</strong> - We accept mobile money, credit cards, and bank transfers.</li>
+                <li><strong>How long does shipping take?</strong> - Typically 3-5 business days within Africa.</li>
+                <li><strong>Is there a return policy?</strong> - Yes, we offer 30-day returns on most products.</li>
+            </ul>
+        </div>
+        
+    <?php elseif($show_promotions): ?>
+        <!-- Promotions Page -->
+        <div class="section-header">
+            <h2>🔥 Hot Deals & Promotions</h2>
+        </div>
+        <div class="product-grid">
+            <?php foreach($promotion_products as $product): ?>
+                <div class="product-card">
+                    <div class="product-img">
+                        <span class="discount-badge">-20%</span>
+                        <img src="<?php echo $product['image_url'] ?: 'https://placehold.co/200x200'; ?>" 
+                             alt="<?php echo htmlspecialchars($product['name']); ?>" 
+                             loading="lazy"
+                             onerror="this.src='https://placehold.co/200x200/e2e8f0/2C3E50?text=Product'">
+                    </div>
+                    <div class="product-info">
+                        <div class="product-title"><?php echo htmlspecialchars($product['name']); ?></div>
+                        <div>
+                            <span class="product-price">ZMW <?php echo number_format($product['discounted_price'], 2); ?></span>
+                            <span class="original-price">ZMW <?php echo number_format($product['price'], 2); ?></span>
+                        </div>
+                        <div class="rating">
+                            <i class="fas fa-star"></i> 
+                            <?php echo $product['avg_rating'] ? number_format($product['avg_rating'], 1) : 'New'; ?>
+                        </div>
+                        <form method="POST" action="cart.php">
+                            <input type="hidden" name="add_to_cart" value="1">
+                            <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                            <input type="hidden" name="quantity" value="1">
+                            <button type="submit" class="btn-action btn-cart">
+                                <i class="fas fa-cart-plus"></i> Add to Cart
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        
+    <?php elseif($show_featured): ?>
+        <!-- Featured Products Page -->
+        <div class="section-header">
+            <h2>⭐ Featured Products</h2>
+        </div>
+        <div class="product-grid">
+            <?php foreach($featured_products as $product): ?>
+                <div class="product-card">
+                    <div class="product-img">
+                        <img src="<?php echo $product['image_url'] ?: 'https://placehold.co/200x200'; ?>" 
+                             alt="<?php echo htmlspecialchars($product['name']); ?>" 
+                             loading="lazy"
+                             onerror="this.src='https://placehold.co/200x200/e2e8f0/2C3E50?text=Product'">
+                    </div>
+                    <div class="product-info">
+                        <div class="product-title"><?php echo htmlspecialchars($product['name']); ?></div>
+                        <div class="product-price">ZMW <?php echo number_format($product['price'], 2); ?></div>
+                        <div class="rating">
+                            <i class="fas fa-star"></i> 
+                            <?php echo $product['avg_rating'] ? number_format($product['avg_rating'], 1) : 'New'; ?>
+                            <?php if($product['review_count'] > 0): ?>
+                                <span style="color: #64748b;">(<?php echo $product['review_count']; ?>)</span>
+                            <?php endif; ?>
+                        </div>
+                        <form method="POST" action="cart.php">
+                            <input type="hidden" name="add_to_cart" value="1">
+                            <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                            <input type="hidden" name="quantity" value="1">
+                            <button type="submit" class="btn-action btn-cart">
+                                <i class="fas fa-cart-plus"></i> Add to Cart
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        
+    <?php elseif(!empty($search_results)): ?>
+        <div class="section-header">
+            <h2>🔍 Search Results for "<?php echo htmlspecialchars($search_term); ?>"</h2>
+        </div>
+        <div class="product-grid">
+            <?php foreach($search_results as $product): ?>
+                <div class="product-card">
+                    <div class="product-img">
+                        <img src="<?php echo $product['image_url'] ?: 'https://placehold.co/200x200'; ?>" 
+                             alt="<?php echo htmlspecialchars($product['name']); ?>" 
+                             loading="lazy"
+                             onerror="this.src='https://placehold.co/200x200/e2e8f0/2C3E50?text=Product'">
+                    </div>
+                    <div class="product-info">
+                        <div class="product-title"><?php echo htmlspecialchars($product['name']); ?></div>
+                        <div class="product-price">ZMW <?php echo number_format($product['price'], 2); ?></div>
+                        <div class="rating">
+                            <i class="fas fa-star"></i> 
+                            <?php echo $product['avg_rating'] ? number_format($product['avg_rating'], 1) : 'New'; ?>
+                        </div>
+                        <form method="POST" action="cart.php">
+                            <input type="hidden" name="add_to_cart" value="1">
+                            <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                            <input type="hidden" name="quantity" value="1">
+                            <button type="submit" class="btn-action btn-cart">
+                                <i class="fas fa-cart-plus"></i> Add to Cart
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        
+    <?php elseif(!empty($category_products)): ?>
+        <div class="section-header">
+            <h2>Products in <?php echo htmlspecialchars($selected_category['name']); ?></h2>
+        </div>
+        <div class="product-grid">
+            <?php foreach($category_products as $product): ?>
+                <div class="product-card">
+                    <div class="product-img">
+                        <img src="<?php echo $product['image_url'] ?: 'https://placehold.co/200x200'; ?>" 
+                             alt="<?php echo htmlspecialchars($product['name']); ?>" 
+                             loading="lazy"
+                             onerror="this.src='https://placehold.co/200x200/e2e8f0/2C3E50?text=Product'">
+                    </div>
+                    <div class="product-info">
+                        <div class="product-title"><?php echo htmlspecialchars($product['name']); ?></div>
+                        <div class="product-price">ZMW <?php echo number_format($product['price'], 2); ?></div>
+                        <div class="rating">
+                            <i class="fas fa-star"></i> 
+                            <?php echo $product['avg_rating'] ? number_format($product['avg_rating'], 1) : 'New'; ?>
+                        </div>
+                        <form method="POST" action="cart.php">
+                            <input type="hidden" name="add_to_cart" value="1">
+                            <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                            <input type="hidden" name="quantity" value="1">
+                            <button type="submit" class="btn-action btn-cart">
+                                <i class="fas fa-cart-plus"></i> Add to Cart
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        
+    <?php else: ?>
+        <!-- Default Home Page -->
+        <div class="hero-section">
+            <div class="hero-content">
+                <div class="hero-badge"><i class="fas fa-globe"></i> Pan-African Trade Hub</div>
+                <h2>Connect, Market & Sell<br>Across <span style="color:#D32F2F;">Africa</span></h2>
+                <p style="margin: 22px 0; font-size:1rem; color:#475569;">Millions of buyers, premium marketing tools, and seamless logistics. Join the fastest-growing B2B ecosystem.</p>
+                <a href="auth/register.php" class="btn-cart btn-action" style="width: auto; padding: 12px 32px; font-size:0.9rem; display: inline-block;">Start Selling →</a>
+            </div>
+            <div class="hero-image">
+                <img src="https://images.pexels.com/photos/3183197/pexels-photo-3183197.jpeg?auto=compress&cs=tinysrgb&w=400" alt="African marketplace">
+            </div>
+        </div>
+
+        <div class="categories-grid" id="categories">
+            <?php foreach($categories as $category): ?>
+                <a href="index.php?category=<?php echo $category['id']; ?>" class="category-item">
+                    <i class="fas <?php echo $category['icon'] ?: 'fa-tag'; ?>"></i>
+                    <span><?php echo htmlspecialchars($category['name']); ?></span>
+                </a>
+            <?php endforeach; ?>
+        </div>
+
+        <?php if(count($featured_products) > 0): ?>
+            <div class="section-header" id="featured">
+                <h2>⭐ Featured Products</h2>
+                <a href="index.php?featured=1" style="color: var(--ale-red); font-weight:500; text-decoration:none;">View all →</a>
+            </div>
+            <div class="product-grid">
+                <?php foreach(array_slice($featured_products, 0, 4) as $product): ?>
+                    <div class="product-card">
+                        <div class="product-img">
+                            <img src="<?php echo $product['image_url'] ?: 'https://placehold.co/200x200'; ?>" 
+                                 alt="<?php echo htmlspecialchars($product['name']); ?>" 
+                                 loading="lazy"
+                                 onerror="this.src='https://placehold.co/200x200/e2e8f0/2C3E50?text=Product'">
+                        </div>
+                        <div class="product-info">
+                            <div class="product-title"><?php echo htmlspecialchars($product['name']); ?></div>
+                            <div class="product-price">MWK <?php echo number_format($product['price'], 2); ?></div>
+                            <div class="rating">
+                                <i class="fas fa-star"></i> 
+                                <?php echo $product['avg_rating'] ? number_format($product['avg_rating'], 1) : 'New'; ?>
+                            </div>
+                            <form method="POST" action="cart.php">
+                                <input type="hidden" name="add_to_cart" value="1">
+                                <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                                <input type="hidden" name="quantity" value="1">
+                                <button type="submit" class="btn-action btn-cart">
+                                    <i class="fas fa-cart-plus"></i> Add to Cart
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <div class="section-header">
+            <h2>🔥 Trending on Msika</h2>
+            <a href="index.php" style="color: var(--ale-red); font-weight:500; text-decoration:none;">View all →</a>
+        </div>
+        <div class="product-grid">
+            <?php foreach($products as $product): ?>
+                <div class="product-card">
+                    <div class="product-img">
+                        <img src="<?php echo $product['image_url'] ?: 'https://placehold.co/200x200'; ?>" 
+                             alt="<?php echo htmlspecialchars($product['name']); ?>" 
+                             loading="lazy"
+                             onerror="this.src='https://placehold.co/200x200/e2e8f0/2C3E50?text=Product'">
+                    </div>
+                    <div class="product-info">
+                        <div class="product-title"><?php echo htmlspecialchars($product['name']); ?></div>
+                        <div class="product-price">ZMW <?php echo number_format($product['price'], 2); ?></div>
+                        <div class="rating">
+                            <i class="fas fa-star"></i> 
+                            <?php echo $product['avg_rating'] ? number_format($product['avg_rating'], 1) : 'New'; ?>
+                        </div>
+                        <form method="POST" action="cart.php">
+                            <input type="hidden" name="add_to_cart" value="1">
+                            <input type="hidden" name="product_id" value="<?php echo $product['id']; ?>">
+                            <input type="hidden" name="quantity" value="1">
+                            <button type="submit" class="btn-action btn-cart">
+                                <i class="fas fa-cart-plus"></i> Add to Cart
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+    <?php endif; ?>
+
+    <div class="marketing-banner">
+        <div>
+            <h3 style="font-size:1.7rem; font-weight:700;">🚀 Become a Verified Seller</h3>
+            <p style="margin-top:8px;">Access premium marketing campaigns & real-time analytics</p>
+        </div>
+        <a href="auth/register.php" class="banner-btn">Apply Now →</a>
+    </div>
+</main>
+
+<footer class="footer">
+    <div class="footer-grid">
+        <div class="footer-col">
+            <h4>Ale Tech-solutions</h4>
+            <p>#1 Marketing & E‑commerce Platform in Africa. Empowering local entrepreneurs and global trade.</p>
+            <div style="display:flex;gap:18px;margin-top:16px;font-size:1.2rem;">
+                <i class="fab fa-facebook-f"></i>
+                <i class="fab fa-twitter"></i>
+                <i class="fab fa-instagram"></i>
+                <i class="fab fa-linkedin-in"></i>
+            </div>
+        </div>
+        <div class="footer-col">
+            <h4>Contact Info</h4>
+            <p><i class="fas fa-phone-alt"></i> +265 990 828 040</p>
+            <p><i class="fas fa-envelope"></i> hello@aletechsolutions.africa</p>
+            <p><i class="fas fa-map-marker-alt"></i> Southern Malazi, Thyolo District</p>
+            <p><i class="fas fa-building"></i> Ale Tech-solutions</p>
+        </div>
+        <div class="footer-col">
+            <h4>Quick Links</h4>
+            <a href="auth/register.php">Sell on Ale Tech-solutions</a>
+            <a href="index.php?page=marketing">Advertise with us</a>
+            <a href="index.php?page=analytics">Marketing Resources</a>
+            <a href="index.php?page=support">Become Affiliate</a>
+        </div>
+        <div class="footer-col">
+            <h4>Legal</h4>
+            <a href="#">Privacy Policy</a>
+            <a href="#">Terms of Service</a>
+            <a href="#">Returns & Refunds</a>
+            <a href="#">Compliance</a>
+        </div>
+    </div>
+    <div class="dev-credit">
+        <i class="fas fa-code"></i> Designed & Developed by <strong>Alex Paul</strong> (Software Engineer) | Montas Lab Technologies, Eastern Zambia, Sinda. <br>
+        <i class="fas fa-mobile-alt"></i> +265 990 828 040 | &copy; 2025 Msika Premium — Innovative Marketing Channel for Africa.
+    </div>
+    <div class="copyright">All rights reserved. Ale Tech-solutions — The number one marketing platform in Africa.</div>
+</footer>
+
+<script>
+    const sideNav = document.getElementById("sideNav");
+    const mobileBtn = document.getElementById("mobileMenuBtn");
+    const overlayDiv = document.getElementById("overlay");
+    
+    function closeSideNav() { 
+        sideNav.classList.remove("open"); 
+        overlayDiv.classList.remove("active"); 
+    }
+    
+    mobileBtn.addEventListener("click", () => { 
+        sideNav.classList.add("open"); 
+        overlayDiv.classList.add("active"); 
+    });
+    
+    overlayDiv.addEventListener("click", closeSideNav);
+    
+    // Close sidenav on link click (mobile)
+    document.querySelectorAll('.sidenav-menu a').forEach(link => {
+        link.addEventListener('click', closeSideNav);
+    });
+</script>
+</body>
+</html>
